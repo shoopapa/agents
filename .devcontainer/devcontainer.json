@@ -16,30 +16,58 @@
     // GitHub CLI (`gh`).
     "ghcr.io/devcontainers/features/github-cli:1": {},
     // Extra apt packages (tmux for managing long-running / parallel shells).
-    "ghcr.io/devcontainers-extra/features/apt-packages:1": { "packages": "tmux" }
+    "ghcr.io/devcontainers-extra/features/apt-packages:1": {
+      "packages": "tmux"
+    }
   },
   "workspaceFolder": "/workspace",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
-  // Persist Claude Code and gh logins across container rebuilds by bind-mounting
-  // the host config dirs. Note: on macOS the Claude OAuth token lives in the
-  // Keychain (not in ~/.claude), so the first run still needs `claude` login
-  // inside the container — that writes ~/.claude/.credentials.json, which this
-  // mount then persists. gh config is file-based, so an existing host login
-  // carries over directly.
+  // Name the container + hostname after the workspace folder so it's easy to
+  // reach: `docker exec -it fred bash` instead of the auto-generated
+  // `vsc-fred-<hash>` name, and the shell prompt reads `root@fred`. Per-folder,
+  // so each agent gets a distinct name (open bob/ -> container `bob`).
+  // Note: a fixed --name must be unique, so you can't run the same agent folder
+  // in two containers at once; if a rebuild ever fails on "name already in
+  // use", remove the stale one with `docker rm <name>`.
+  "runArgs": ["--name", "${localWorkspaceFolderBasename}", "--hostname", "${localWorkspaceFolderBasename}"],
+  // Persistent home — the mini-computer disk. The container runs as root, and
+  // root's entire HOME (/root) is a named Docker volume, so anything you
+  // configure (your `claude` login, `gh` login, git identity, shell history,
+  // tools you install into ~) lives in the volume and survives `docker rm` +
+  // rebuild. No per-path mounts to maintain: set it up once, it lasts forever.
+  //
+  // The volume is named after the opened workspace folder
+  // (${localWorkspaceFolderBasename}), so opening fred/ gives a `fred-root`
+  // volume: readable in `docker volume ls` and still unique per agent (open
+  // bob/ and you get `bob-root`). A fresh volume is seeded with the image's
+  // default /root (Docker copies it in on first mount), so your shell config
+  // isn't lost on first boot.
+  //
+  // To wipe an agent back to factory state, delete its volume:
+  //   docker volume rm fred-root        (i.e. <folder>-root)
   "mounts": [
-    "source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind",
-    "source=${localEnv:HOME}/.config/gh,target=/home/node/.config/gh,type=bind",
-    // git identity (user.name/email) from the host, read-only so the container
-    // can't rewrite your host gitconfig. GitHub auth is set up separately in
-    // post-create.sh (gh credential helper + SSH->HTTPS rewrite).
-    "source=${localEnv:HOME}/.gitconfig,target=/home/node/.gitconfig,type=bind,readonly",
-    // SSH keys from the host, read-only so the container can't modify or
-    // overwrite them. Lets git/ssh inside the container authenticate to remotes
-    // (e.g. git over SSH) using your existing host keys. SSH ignores the private
-    // key if it's group/world-readable, so keep host perms at 600.
-    "source=${localEnv:HOME}/.ssh,target=/home/node/.ssh,type=bind,readonly"
+    "source=${localWorkspaceFolderBasename}-root,target=/root,type=volume",
+    // Your host SSH keys, read-only. Mounted into root's ~/.ssh because the
+    // container runs as root (the user you actually operate as).
+    "source=${localEnv:HOME}/.ssh,target=/root/.ssh,type=bind,readonly"
   ],
-  // Configures git/GitHub auth. See .devcontainer/post-create.sh for details.
-  "postCreateCommand": "bash .devcontainer/post-create.sh",
-  "remoteUser": "node"
+  // Git auth setup (inlined rather than calling a .devcontainer/ script: when an
+  // agent folder is opened as the workspace its .devcontainer is a symlink to
+  // the repo-root one ABOVE the mount root, so a `.devcontainer/...` path is
+  // unreachable inside the container). Two independent paths are wired up:
+  //
+  //  1. SSH (default for `git@github.com:` URLs): uses the keys you bind-mount
+  //     at ~/.ssh. The ssh_config.d drop-in makes the FIRST connection succeed
+  //     non-interactively — accept-new auto-trusts GitHub's host key, written
+  //     to a known_hosts file on the (writable) home volume since the ~/.ssh
+  //     mount is read-only. NOTE: there is deliberately NO `insteadOf` rewrite
+  //     here — that would turn SSH URLs into HTTPS and bypass your keys.
+  //
+  //  2. HTTPS (optional fallback): the gh credential helper. Run `gh auth login`
+  //     once; it persists in the home volume.
+  //
+  // Set your git identity once inside (git config --global user.name/email); it
+  // persists in ~/.gitconfig on the home volume.
+  "postCreateCommand": "git config --system 'credential.https://github.com.helper' '!gh auth git-credential' && printf 'Host *\\n  StrictHostKeyChecking accept-new\\n  UserKnownHostsFile /root/.ssh_known_hosts\\n' > /etc/ssh/ssh_config.d/devcontainer.conf",
+  "remoteUser": "root"
 }
