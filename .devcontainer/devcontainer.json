@@ -1,0 +1,45 @@
+{
+  "name": "Dev Workspace",
+  // Each dev container is a self-contained "mini computer": it runs its own
+  // Docker daemon (docker-in-docker) so containers you start inside are isolated
+  // per dev container. That lets you run many dev containers at once without the
+  // container-name or host-port collisions you'd hit when sibling containers
+  // share the host's Docker daemon.
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:22",
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {},
+    // moby:false installs upstream Docker CE instead of the open-source Moby
+    // packages, which aren't published for the base image's Debian 13 (trixie).
+    "ghcr.io/devcontainers/features/docker-in-docker:2": { "moby": false },
+    // Anthropic's official feature installs the Claude Code CLI (`claude`).
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {},
+    // GitHub CLI (`gh`).
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    // Extra apt packages (tmux for managing long-running / parallel shells).
+    "ghcr.io/devcontainers-extra/features/apt-packages:1": { "packages": "tmux" }
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  // Persist Claude Code and gh logins across container rebuilds by bind-mounting
+  // the host config dirs. Note: on macOS the Claude OAuth token lives in the
+  // Keychain (not in ~/.claude), so the first run still needs `claude` login
+  // inside the container — that writes ~/.claude/.credentials.json, which this
+  // mount then persists. gh config is file-based, so an existing host login
+  // carries over directly.
+  "mounts": [
+    "source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind",
+    "source=${localEnv:HOME}/.config/gh,target=/home/node/.config/gh,type=bind",
+    // git identity (user.name/email) from the host, read-only so the container
+    // can't rewrite your host gitconfig. GitHub auth is set up separately in
+    // post-create.sh (gh credential helper + SSH->HTTPS rewrite).
+    "source=${localEnv:HOME}/.gitconfig,target=/home/node/.gitconfig,type=bind,readonly",
+    // SSH keys from the host, read-only so the container can't modify or
+    // overwrite them. Lets git/ssh inside the container authenticate to remotes
+    // (e.g. git over SSH) using your existing host keys. SSH ignores the private
+    // key if it's group/world-readable, so keep host perms at 600.
+    "source=${localEnv:HOME}/.ssh,target=/home/node/.ssh,type=bind,readonly"
+  ],
+  // Configures git/GitHub auth. See .devcontainer/post-create.sh for details.
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "remoteUser": "node"
+}
